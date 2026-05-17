@@ -6,6 +6,7 @@ export * from './useUnmount';
 export * from './useDebounce';
 export * from './usePrevious';
 export * from './useInterval';
+export * from './useThrottle';
 export * from './useEscapeKey';
 export * from './useScrollLock';
 export * from './useMediaQuery';
