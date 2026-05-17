@@ -5,12 +5,9 @@ export type DateInput = Date | string | number | null | undefined;
 
 export type FormatLang = "az" | "en" | "ru";
 
-export interface DaysToYMDDaysModel {
-  endDate: Date;
-  startDate: Date;
-}
-
 export type DaysFormatOrder = 'YMD' | 'DMY' | 'MDY';
+
+export type PluralLabel = { one: string; other?: string; few?: string; many?: string };
 
 export interface GenerateOrderedDateTextModel {
   lang: FormatLang;
@@ -23,13 +20,14 @@ export interface GenerateOrderedDateTextModel {
 }
 
 export interface DaysToYMDDaysOptionsModel {
-  asText: boolean;
+  asText?: boolean;
   lang?: FormatLang;
   order?: DaysFormatOrder;
 }
 
 export interface DaysToYMDParams {
-  days: DaysToYMDDaysModel;
+  endDate: DateInput;
+  startDate: DateInput;
   options?: DaysToYMDDaysOptionsModel;
 }
 
@@ -89,6 +87,19 @@ const generateOrderedDateText = ({ order, lang, date }: GenerateOrderedDateTextM
   return ordered.filter(Boolean).join(' ');
 }
 
+
+const pluralRulesCache = new Map<FormatLang, Intl.PluralRules>();
+
+const pluralize = (lang: FormatLang, n: number, label: PluralLabel): string => {
+  let rules = pluralRulesCache.get(lang);
+  if (!rules) {
+    rules = new Intl.PluralRules(lang);
+    pluralRulesCache.set(lang, rules);
+  }
+  const category = rules.select(n) as keyof PluralLabel;
+  return label[category] ?? label.one;
+}
+
 const getLabels = (lang: GenerateOrderedDateTextModel['lang'], years: number, months: number, days: number) => {
   switch (lang) {
     case 'az': {
@@ -98,32 +109,23 @@ const getLabels = (lang: GenerateOrderedDateTextModel['lang'], years: number, mo
     case 'en': {
       const enLabel = DateLangLabels.EN;
       return {
-        day: enPlural(days, enLabel.day.one, enLabel.day.other),
-        year: enPlural(years, enLabel.year.one, enLabel.year.other),
-        month: enPlural(months, enLabel.month.one, enLabel.month.other),
+        day: pluralize(lang, days, enLabel.day),
+        year: pluralize(lang, years, enLabel.year),
+        month: pluralize(lang, months, enLabel.month),
       };
     }
     case 'ru': {
       const ruLabel = DateLangLabels.RU;
       return {
-        day: ruPlural(days, ruLabel.day.one, ruLabel.day.few, ruLabel.day.many),
-        year: ruPlural(years, ruLabel.year.one, ruLabel.year.few, ruLabel.year.many),
-        month: ruPlural(months, ruLabel.month.one, ruLabel.month.few, ruLabel.month.many),
+        day: pluralize(lang, days, ruLabel.day),
+        year: pluralize(lang, years, ruLabel.year),
+        month: pluralize(lang, months, ruLabel.month),
       };
     }
+    default: {
+      throw new Error(`Unsupported lang: ${lang}`);
+    }
   }
-}
-
-const enPlural = (n: number, one: string, other: string): string => {
-  return n === 1 ? one : other;
-}
-
-const ruPlural = (n: number, one: string, few: string, many: string): string => {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return one;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
-  return many;
 }
 
 /* ----------------------------- formatDate() ----------------------------- */
@@ -391,18 +393,65 @@ export const compareDates = (date1: DateInput, date2: DateInput): -1 | 0 | 1 | u
 
 /* ----------------------------- getDaysDiffAsText() ----------------------------- */
 
-export const getDaysDiffAsText = ({
-  options,
-  days: { endDate, startDate },
-}: DaysToYMDParams): DaysToYMDOutputModel | string => {
-  const { asText, lang = 'az', order = 'YMD' } = options ?? {};
+/**
+ * Calculates the difference between two dates broken down into years, months, and days.
+ *
+ * By default returns a localized human-readable string (e.g. `"1 il 3 ay 9 gün"`).
+ * Pass `options.asText: false` to receive a structured object instead.
+ *
+ * @param startDate - The earlier date. Accepts `Date`, ISO string, or Unix timestamp (ms).
+ * @param endDate - The later date. Must be greater than or equal to `startDate`.
+ * @param options - Optional formatting options.
+ *   - `asText` (default `true`): if `true`, returns a formatted string; if `false`, returns `DaysToYMDOutputModel`.
+ *   - `lang` (default `'az'`): output language — `'az'`, `'en'`, or `'ru'`.
+ *   - `order` (default `'YMD'`): component order — `'YMD'`, `'DMY'`, or `'MDY'`.
+ *
+ * @returns A formatted string when `asText` is true, otherwise `{ yearCount, monthCount, dayCount }`.
+ *
+ * @throws {Error} If either `startDate` or `endDate` is invalid / unparseable.
+ * @throws {Error} If `endDate` is earlier than `startDate`.
+ *
+ * @example
+ * // Default usage — Azerbaijani text
+ * getDaysDiffAsText({
+ *   startDate: '2026-03-01',
+ *   endDate: '2027-06-10',
+ * });
+ * // → "1 il 3 ay 9 gün"
+ *
+ * @example
+ * // English output, day-month-year order
+ * getDaysDiffAsText({
+ *   startDate: new Date('2026-03-01'),
+ *   endDate: new Date('2027-06-10'),
+ *   options: { lang: 'en', order: 'DMY' },
+ * });
+ * // → "9 days 3 months 1 year"
+ *
+ * @example
+ * // Structured output instead of string
+ * getDaysDiffAsText({
+ *   startDate: '2026-01-01',
+ *   endDate: '2027-01-01',
+ *   options: { asText: false },
+ * });
+ * // → { yearCount: 1, monthCount: 0, dayCount: 0 }
+ */
 
-  if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+export function getDaysDiffAsText({
+  options, endDate, startDate,
+}: DaysToYMDParams): DaysToYMDOutputModel | string {
+  const { asText = true, lang = 'az', order = 'YMD' } = options ?? {};
+
+  const startParsed = toDate(startDate);
+  const endParsed = toDate(endDate);
+
+  if (!startParsed || !endParsed) {
     throw new Error('Invalid date provided');
   }
 
-  const start = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
-  const end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate()));
+  const start = new Date(Date.UTC(startParsed.getUTCFullYear(), startParsed.getUTCMonth(), startParsed.getUTCDate()));
+  const end = new Date(Date.UTC(endParsed.getUTCFullYear(), endParsed.getUTCMonth(), endParsed.getUTCDate()));
 
   if (end < start) {
     throw new Error('endDate must be greater than startDate');
@@ -412,11 +461,12 @@ export const getDaysDiffAsText = ({
   const diffMonths = end.getUTCMonth() - start.getUTCMonth();
   let totalMonths = diffYears * 12 + diffMonths;
 
-  if (computeAnchor({ totalMonths, startDate: start }) > end) {
+  let anchor = computeAnchor({ totalMonths, startDate: start });
+  if (anchor > end) {
     totalMonths--;
+    anchor = computeAnchor({ totalMonths, startDate: start });
   }
 
-  const anchor = computeAnchor({ totalMonths, startDate: start });
   const years = Math.floor(totalMonths / 12);
   const months = totalMonths % 12;
   const days = Math.floor((end.getTime() - anchor.getTime()) / (1000 * 60 * 60 * 24));
